@@ -60,12 +60,13 @@ uploaded_file = st.file_uploader("📂 Upload your liked songs playlist (.json)"
 if uploaded_file:
     playlist_data = json.load(uploaded_file)
     playlist_df = pd.DataFrame(playlist_data)
-    user_features = ['danceability', 'energy', 'valence', 'tempo']
-    playlist_df = playlist_df.dropna(subset=user_features)
+    # Use the full 9-feature list for consistency
+    all_features = ['danceability', 'energy', 'loudness', 'speechiness', 'acousticness',
+                    'instrumentalness', 'liveness', 'tempo', 'duration_ms']
 
-    # User profile vector
-    user_profile_vector = playlist_df[user_features].mean().values.reshape(1, -1)
-    user_scaled = scaler.transform(user_profile_vector)
+    playlist_df = playlist_df.dropna(subset=all_features)
+    user_profile_vector = playlist_df[all_features].mean().values.reshape(1, -1)
+    user_scaled = scaler.transform(user_profile_vector)  # ✅ Will now work
 
     # Filter options
     filter_type = st.radio("🔍 Apply a filter?", ["None", "By Genre", "By Mood"])
@@ -84,6 +85,9 @@ if uploaded_file:
             filtered_df = spotify_df[(spotify_df['energy'] < 0.4) & (spotify_df['valence'] < 0.4)]
 
     # Recommendation
+    # Assuming user_features is defined somewhere, replace with your actual feature list if different
+    user_features = all_features
+
     if not filtered_df.empty:
         df_scaled = scaler.transform(filtered_df[user_features])
         similarity = cosine_similarity(user_scaled, df_scaled)[0]
