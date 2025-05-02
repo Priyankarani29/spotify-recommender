@@ -10,17 +10,21 @@ Original file is located at
 import streamlit as st
 import pandas as pd
 import json
+import numpy as np
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report
+from sklearn.linear_model import LogisticRegression
+from sklearn.svm import SVC
+from xgboost import XGBClassifier
 from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="🎵 Song Recommender", layout="centered")
-st.title("🎵 Personalized Song Recommendation System")
+st.title("🎵 Enhanced Spotify Song Recommendation System")
 
 @st.cache_data
 def load_spotify_data():
@@ -30,28 +34,55 @@ def load_spotify_data():
 
 spotify_df = load_spotify_data()
 
-# Full feature list
+# Main feature list
 model_features = ['danceability', 'energy', 'loudness', 'speechiness', 'acousticness',
                   'instrumentalness', 'liveness', 'tempo', 'duration_ms', 'valence']
 
-# Prepare ML evaluation
+# Remove exact duplicates (based on song name + artist if available)
+spotify_df = spotify_df.drop_duplicates(subset=['track_name', 'track_genre'], keep='first')
+
+# ML model evaluation section
 st.subheader("📊 Model Evaluation")
-X = spotify_df[model_features[:-1]]  # exclude valence
+
+X = spotify_df[model_features[:-1]]
 y = spotify_df['valence'].apply(lambda x: 1 if x > 0.5 else 0)
 
 scaler = StandardScaler()
 X_scaled = scaler.fit_transform(X)
+
 X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
 
+# Store reports
+reports = {}
+
+# KNN
 knn = KNeighborsClassifier(n_neighbors=5)
 knn.fit(X_train, y_train)
-st.text("🔹 KNN")
-st.text(classification_report(y_test, knn.predict(X_test)))
+reports["KNN"] = classification_report(y_test, knn.predict(X_test))
 
+# Random Forest
 rf = RandomForestClassifier()
 rf.fit(X_train, y_train)
-st.text("🔹 Random Forest")
-st.text(classification_report(y_test, rf.predict(X_test)))
+reports["Random Forest"] = classification_report(y_test, rf.predict(X_test))
+
+# Logistic Regression
+logreg = LogisticRegression(max_iter=1000)
+logreg.fit(X_train, y_train)
+reports["Logistic Regression"] = classification_report(y_test, logreg.predict(X_test))
+
+# SVM
+svm = SVC()
+svm.fit(X_train, y_train)
+reports["SVM"] = classification_report(y_test, svm.predict(X_test))
+
+# XGBoost
+xgb = XGBClassifier(use_label_encoder=False, eval_metric='logloss')
+xgb.fit(X_train, y_train)
+reports["XGBoost"] = classification_report(y_test, xgb.predict(X_test))
+
+# Display results
+model_to_view = st.selectbox("📈 Select a model to view its classification report", list(reports.keys()))
+st.text(reports[model_to_view])
 
 # Upload playlist
 uploaded_file = st.file_uploader("📂 Upload your liked songs playlist (.json)", type="json")
@@ -60,20 +91,13 @@ if uploaded_file:
     playlist_data = json.load(uploaded_file)
     playlist_df = pd.DataFrame(playlist_data)
 
-    # Check which features are available
     available_features = [f for f in model_features[:-1] if f in playlist_df.columns]
-    missing_features = set(model_features[:-1]) - set(available_features)
-
-    if missing_features:
-        st.warning(f"⚠️ Your playlist is missing these features: {', '.join(missing_features)}")
-
     if not available_features:
-        st.error("🚫 Cannot compute recommendations. Your playlist has no usable audio features.")
+        st.error("🚫 Playlist missing required features.")
     else:
         playlist_df = playlist_df.dropna(subset=available_features)
         user_profile_vector = playlist_df[available_features].mean().values.reshape(1, -1)
 
-        # Scale playlist features based on Spotify dataset
         scaler_subset = StandardScaler()
         scaler_subset.fit(spotify_df[available_features])
         user_scaled = scaler_subset.transform(user_profile_vector)
@@ -85,34 +109,36 @@ if uploaded_file:
         if filter_type == "By Genre":
             genres = spotify_df['track_genre'].dropna().unique().tolist()
             selected_genre = st.selectbox("🎼 Select Genre", sorted(genres))
-            filtered_df = spotify_df[spotify_df['track_genre'].str.contains(selected_genre, case=False, na=False)]
+            filtered_df = filtered_df[filtered_df['track_genre'].str.contains(selected_genre, case=False, na=False)]
 
         elif filter_type == "By Mood":
             mood = st.selectbox("🎧 Select Mood", ["Energetic + Happy", "Calm + Low Valence"])
             if mood == "Energetic + Happy":
-                filtered_df = spotify_df[(spotify_df['energy'] > 0.7) & (spotify_df['valence'] > 0.7)]
+                filtered_df = filtered_df[(filtered_df['energy'] > 0.7) & (filtered_df['valence'] > 0.7)]
             else:
-                filtered_df = spotify_df[(spotify_df['energy'] < 0.4) & (spotify_df['valence'] < 0.4)]
+                filtered_df = filtered_df[(filtered_df['energy'] < 0.4) & (filtered_df['valence'] < 0.4)]
 
-        # Generate recommendations
         if not filtered_df.empty:
             df_scaled = scaler_subset.transform(filtered_df[available_features])
             similarity = cosine_similarity(user_scaled, df_scaled)[0]
             filtered_df = filtered_df.copy()
             filtered_df['similarity'] = similarity
 
-            st.subheader("🎯 Top 10 Song Recommendations")
-            st.dataframe(filtered_df[['track_name', 'track_genre', 'similarity']].sort_values(by='similarity', ascending=False).head(10))
+            # Sort and shuffle within high-similarity group
+            top_df = filtered_df.sort_values(by='similarity', ascending=False).head(50)
+            top_df = top_df.drop_duplicates(subset=['track_name', 'track_genre'])
+            top_df = top_df.sample(n=min(10, len(top_df)), random_state=42)
+
+            st.subheader("🎯 Diverse Recommendations Just for You")
+            st.dataframe(top_df[['track_name', 'track_genre', 'similarity']])
         else:
             st.warning("⚠️ No songs match your filter.")
 
-        # Optional PCA
+        # Optional: PCA Plot
         if st.checkbox("Show PCA Visualization"):
-            st.subheader("🎨 Feature Space")
             pca = PCA(n_components=2)
-            full_X_scaled = StandardScaler().fit_transform(X)
-            pca_result = pca.fit_transform(full_X_scaled)
-            pca_df = pd.DataFrame(pca_result, columns=["PC1", "PC2"])
+            X_reduced = pca.fit_transform(X_scaled)
+            pca_df = pd.DataFrame(X_reduced, columns=["PC1", "PC2"])
             pca_df["liked"] = y.values
 
             fig, ax = plt.subplots()
@@ -121,7 +147,6 @@ if uploaded_file:
             ax.set_xlabel("PC1")
             ax.set_ylabel("PC2")
             st.pyplot(fig)
-
 else:
-    st.info("👈 Upload your liked songs playlist to get personalized recommendations.")
+    st.info("👈 Upload your liked songs playlist to get recommendations.")
 
